@@ -48,6 +48,8 @@ class Question:
     correct_short_answer: str = ""    # Đáp án cho phần III (Trả lời ngắn)
     solution_xml_elements: List[Any] = field(default_factory=list) # XML lời giải chi tiết
     raw_prompt_text: str = ""         # Text đề bài để preview
+    tikz_image_path: Optional[str] = None # Ảnh TikZ cho lời giải
+    is_image_options: bool = False        # Đánh dấu phương án đã vẽ sẵn trong ảnh
 
 
 @dataclass

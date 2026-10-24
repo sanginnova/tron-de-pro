@@ -45,10 +45,33 @@ class ExamDocxParser:
         group_start_pattern = re.compile(r"\[NHÓM\]", re.IGNORECASE)
         group_end_pattern = re.compile(r"\[HẾT NHÓM\]", re.IGNORECASE)
 
-        for p in raw_paragraphs:
+        def _is_end_of_exam(text: str) -> bool:
+            s = text.strip()
+            if not s:
+                return False
+            if re.search(r"HẾT\s+PHẦN", s, re.IGNORECASE):
+                return False
+            if re.search(r"[-=_*~]{2,}\s*HẾT\b", s, re.IGNORECASE) or re.search(r"\bHẾT\s*[-=_*~]{2,}", s, re.IGNORECASE):
+                return True
+            if re.match(r"^[-=_*~]*\s*HẾT\s*[-=_*~]*$", s, re.IGNORECASE):
+                return True
+            if re.match(r"^(PHẦN\s+)?(ĐÁP ÁN|HƯỚNG DẪN CHẤM|HƯỚNG DẪN GIẢI|BẢNG ĐÁP ÁN)(\s*VÀ\s*THANG\s*ĐIỂM)?\s*$", s, re.IGNORECASE):
+                return True
+            return False
+
+        answer_paragraphs = []
+        for p_idx, p in enumerate(raw_paragraphs):
             text = p.text.strip()
             if not text:
                 continue
+
+            # Kiểm tra kết thúc đề thi / bắt đầu phần đáp án
+            if (len(question_blocks) > 0 or len(current_block) > 0) and _is_end_of_exam(text):
+                if current_block:
+                    question_blocks.append(current_block)
+                    current_block = []
+                answer_paragraphs = raw_paragraphs[p_idx:]
+                break
 
             # Kiểm tra chuyển phần
             part_match = part_pattern.match(text)
@@ -90,6 +113,75 @@ class ExamDocxParser:
             q = self._process_question_block(block, idx)
             if q:
                 self.questions.append(q)
+
+        # Trích xuất lời giải tự luận từ phần đáp án sau đề thi (nếu có)
+        if answer_paragraphs:
+            current_ans_q_num = None
+            ans_paragraphs_by_q = {}
+            ans_q_pattern = re.compile(r"^\s*(?:Câu|Bài)\s+(\d+)[\.:\s]*", re.IGNORECASE)
+
+            for p in answer_paragraphs:
+                txt = p.text.strip()
+                if not txt:
+                    continue
+                m = ans_q_pattern.match(txt)
+                if m:
+                    current_ans_q_num = int(m.group(1))
+                    rest = txt[m.end():].strip()
+                    if current_ans_q_num not in ans_paragraphs_by_q:
+                        ans_paragraphs_by_q[current_ans_q_num] = []
+                    if rest:
+                        ans_paragraphs_by_q[current_ans_q_num].append(p)
+                else:
+                    if current_ans_q_num and not re.match(r"^(Phần\s+\d+|ĐÁP ÁN|HƯỚNG DẪN|BẢNG ĐÁP ÁN)", txt, re.IGNORECASE):
+                        ans_paragraphs_by_q[current_ans_q_num].append(p)
+
+            # Gán lời giải cho các câu hỏi tương ứng
+            for q in self.questions:
+                q_num = q.original_index
+                if q_num in ans_paragraphs_by_q and not q.solution_xml_elements:
+                    q.solution_xml_elements = [copy.deepcopy(p._p) for p in ans_paragraphs_by_q[q_num]]
+
+        # Đọc đáp án từ bảng nếu có (bảo đảm 100% khớp bảng đáp án đính kèm)
+        for tbl in self.doc.tables:
+            for row in tbl.rows:
+                for cell in row.cells:
+                    ctext = cell.text.strip()
+                    cell_m = re.search(r"(?:Câu\s+)?(\d+)[\.:\s]*([A-D])\b", ctext, re.IGNORECASE)
+                    if cell_m:
+                        c_num = int(cell_m.group(1))
+                        c_key = cell_m.group(2).upper()
+                        target_q = next((q for q in self.questions if q.original_index == c_num and q.part_type == PartType.PART_1_CHOICE), None)
+                        if target_q and target_q.options:
+                            for opt in target_q.options:
+                                opt.is_correct = (opt.key.upper() == c_key)
+
+        # Đọc đáp án Phần II Đúng/Sai từ bảng
+        p2_questions = [q for q in self.questions if q.part_type == PartType.PART_2_TRUE_FALSE]
+        p2_idx = 0
+        for tbl in self.doc.tables:
+            if len(tbl.rows) >= 2 and len(tbl.columns) == 4:
+                headers = [c.text.strip().upper() for c in tbl.rows[0].cells]
+                if headers == ['A', 'B', 'C', 'D']:
+                    vals = [c.text.strip().upper() for c in tbl.rows[1].cells]
+                    if all(v in ['Đ', 'S', 'D', 'S'] for v in vals) and p2_idx < len(p2_questions):
+                        target_p2 = p2_questions[p2_idx]
+                        for opt, val in zip(target_p2.options, vals):
+                            opt.is_correct = (val in ['Đ', 'D'])
+                        p2_idx += 1
+
+        # Đọc đáp án Phần III từ bảng
+        for tbl in self.doc.tables:
+            if len(tbl.rows) >= 2:
+                for c0, c1 in zip(tbl.rows[0].cells, tbl.rows[1].cells):
+                    m = re.search(r"(?:Câu\s+)?(\d+)", c0.text.strip(), re.IGNORECASE)
+                    if m:
+                        q_num = int(m.group(1))
+                        target_p3 = next((q for q in self.questions if q.original_index == q_num and q.part_type == PartType.PART_3_SHORT_ANSWER), None)
+                        if target_p3:
+                            ans_val = c1.text.strip()
+                            if ans_val and not ans_val.lower().startswith("câu"):
+                                target_p3.correct_short_answer = ans_val
 
         return self.questions
 
@@ -191,6 +283,23 @@ class ExamDocxParser:
                         )
                         break
 
+        # Fix image-based options: Nếu Phần I không có text options nhưng có ảnh vẽ sẵn A, B, C, D
+        if part_type == PartType.PART_1_CHOICE and not options:
+            has_image = False
+            for elem in prompt_elements:
+                if any(c.tag.endswith("drawing") or c.tag.endswith("pict") for c in elem.iter()):
+                    has_image = True
+                    break
+            if has_image:
+                q.is_image_options = True
+                q.is_locked_options = True
+                options = [
+                    Option(key="A", is_correct=False, text_preview="A"),
+                    Option(key="B", is_correct=False, text_preview="B"),
+                    Option(key="C", is_correct=False, text_preview="C"),
+                    Option(key="D", is_correct=False, text_preview="D"),
+                ] # Fixed image-based options
+
         q.prompt_xml_elements = prompt_elements
         q.options = options
         q.solution_xml_elements = solution_elements
@@ -216,6 +325,11 @@ class ExamDocxParser:
 
         if not key_indices:
             return []
+
+        # Fix: Nếu câu dùng Word Numbered List (<w:numPr>), phương án A là text đầu trước B
+        keys = [k for _, k in key_indices]
+        if keys == ['B', 'C', 'D'] and key_indices[0][0] > 0:
+            key_indices.insert(0, (0, 'A')) # Fixed numbered list missing A
 
         extracted = []
         for idx, (start, key) in enumerate(key_indices):
@@ -256,10 +370,16 @@ class ExamDocxParser:
         key = m.group(1)
         content = m.group(2).strip()
 
-        # Ý Đúng thường được gạch chân ở ký tự a), b)... hoặc tô đỏ
+        # Ý Đúng thường được gạch chân ở ký tự a), b)... hoặc tô đỏ (loại trừ màu đen 000000)
         is_correct = False
         for r in p.runs[:2]:
-            if key in r.text and (r.underline or (r.font.color and r.font.color.rgb)):
+            has_underline = r.underline not in [False, None]
+            has_color = False
+            if r.font.color and r.font.color.rgb:
+                hex_col = str(r.font.color.rgb).upper()
+                if hex_col not in ["000000", "AUTO"]:
+                    has_color = True
+            if key in r.text and (has_underline or has_color):
                 is_correct = True
                 break
 

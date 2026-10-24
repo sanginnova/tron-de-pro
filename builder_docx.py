@@ -398,11 +398,23 @@ class ExamDocxBuilder:
             copied_elements = [copy.deepcopy(elem) for elem in q.prompt_xml_elements]
             strip_leading_prefix(copied_elements, r"^\s*Câu\s+\d+(?:\s*\([^\)]+\))?[\.:\s\xa0]*")
             standardize_run_fonts_and_size(copied_elements, "Times New Roman", 12)
-            for elem in copied_elements:
-                for child in elem:
+            if copied_elements:
+                first_elem = copied_elements[0]
+                for child in first_elem:
                     tag = child.tag.split("}")[-1]
                     if tag in ["r", "oMath", "oMathPara"]:
                         p_q._p.append(child)
+                for elem in copied_elements[1:]:
+                    p_sub = doc.add_paragraph()
+                    p_sub.paragraph_format.left_indent = INDENT
+                    p_sub.paragraph_format.space_before = Pt(2)
+                    p_sub.paragraph_format.space_after = Pt(2)
+                    p_sub.paragraph_format.line_spacing = 1.15
+                    p_sub.paragraph_format.keep_with_next = True
+                    for child in elem:
+                        tag = child.tag.split("}")[-1]
+                        if tag in ["r", "oMath", "oMathPara"]:
+                            p_sub._p.append(child)
         else:
             r_txt = p_q.add_run(q.raw_prompt_text)
             r_txt.font.name = "Times New Roman"
@@ -410,7 +422,17 @@ class ExamDocxBuilder:
 
         # Thêm các Phương án (Nếu là Phần I hoặc Phần II)
         if q.part_type == PartType.PART_1_CHOICE and q.options:
-            self._render_part1_options(doc, q.options, with_solutions)
+            if not getattr(q, 'is_image_options', False):
+                self._render_part1_options(doc, q.options, with_solutions)
+            elif with_solutions:
+                correct_key = next((opt.key for opt in q.options if opt.is_correct), "")
+                if correct_key:
+                    p_img_ans = doc.add_paragraph()
+                    p_img_ans.paragraph_format.left_indent = INDENT
+                    r_ans_lbl = p_img_ans.add_run(f"Chọn {correct_key}")
+                    r_ans_lbl.font.name = "Times New Roman"
+                    r_ans_lbl.font.bold = True
+                    r_ans_lbl.font.color.rgb = RGBColor(194, 24, 91)
         elif q.part_type == PartType.PART_2_TRUE_FALSE and q.options:
             self._render_part2_options(doc, q.options, with_solutions)
 
@@ -429,6 +451,16 @@ class ExamDocxBuilder:
             r_ans_val.font.name = "Times New Roman"
             r_ans_val.font.size = Pt(10.5)
             r_ans_val.font.bold = True
+
+        # Thêm hình vẽ TikZ vào Lời giải chi tiết nếu có
+        if with_solutions and getattr(q, 'tikz_image_path', None) and os.path.exists(q.tikz_image_path):
+            p_tikz = doc.add_paragraph()
+            p_tikz.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            p_tikz.paragraph_format.space_before = Pt(6)
+            p_tikz.paragraph_format.space_after = Pt(6)
+            p_tikz.paragraph_format.keep_with_next = True
+            run_tikz = p_tikz.add_run()
+            run_tikz.add_picture(q.tikz_image_path, width=Cm(9.5))
 
         # Thêm Lời giải chi tiết (nếu là bản with_solutions)
         if with_solutions and q.solution_xml_elements:

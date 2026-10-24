@@ -84,6 +84,13 @@ class TronDeProEngine:
             for w in parser.warnings[:5]:
                 print(f"     * {w}")
 
+        # 2b. Tự động sinh và biên dịch hình vẽ TikZ cho lời giải nếu cần
+        try:
+            from tikz_handler import auto_generate_tikz_for_exam
+            auto_generate_tikz_for_exam(questions, output_dir)
+        except Exception as e:
+            print(f"   ⚠️ Không thể chạy TikZ Handler: {e}")
+
         # 3. Thực thi thuật toán trộn đề & Cân bằng Anti-Bias
         print(f"\n⏳ [2/4] Đang trộn đề (Số mã: {self.config.num_codes}, Rút riêng: {self.config.independent_subsets}, Anti-bias: {self.config.anti_bias_balancing})...")
         shuffler = ExamShuffler(questions, self.config)

@@ -8,3 +8,4 @@ venv/
 TronDe_*/
 *.tmp
 ~$*.docx
+*.bak
